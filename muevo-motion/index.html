@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>MUEVO — Classic in Motion</title>
+<style>
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-Black.woff2);font-weight:900}
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-ExtraBold.woff2);font-weight:800}
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-Bold.woff2);font-weight:700}
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-SemiBold.woff2);font-weight:600}
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-Medium.woff2);font-weight:500}
+@font-face{font-family:Pret;src:url(node_modules/pretendard/dist/web/static/woff2/Pretendard-Regular.woff2);font-weight:400}
+@font-face{font-family:Corm;src:url(node_modules/@fontsource/cormorant-garamond/files/cormorant-garamond-latin-500-normal.woff2);font-weight:500}
+@font-face{font-family:Corm;src:url(node_modules/@fontsource/cormorant-garamond/files/cormorant-garamond-latin-600-normal.woff2);font-weight:600}
+@font-face{font-family:Corm;src:url(node_modules/@fontsource/cormorant-garamond/files/cormorant-garamond-latin-700-normal.woff2);font-weight:700}
+@font-face{font-family:Corm;src:url(node_modules/@fontsource/cormorant-garamond/files/cormorant-garamond-latin-500-italic.woff2);font-weight:500;font-style:italic}
+@font-face{font-family:Corm;src:url(node_modules/@fontsource/cormorant-garamond/files/cormorant-garamond-latin-600-italic.woff2);font-weight:600;font-style:italic}
+
+:root{
+  --ivory:#F2EDE4; --ink:#121110; --gold:#B8914F; --gold2:#E3C68F; --champ:#D8BF8F; --grey:#8A8378;
+}
+html,body{margin:0;padding:0;background:#000}
+#stage{position:relative;width:1080px;height:1920px;overflow:hidden;font-family:Pret,sans-serif;background:var(--ivory);
+  -webkit-font-smoothing:antialiased;font-kerning:normal}
+.L{position:absolute;inset:0}
+.sc{position:absolute;inset:0}
+canvas{position:absolute;left:0;top:0;width:1080px;height:1920px;pointer-events:none}
+.abs{position:absolute}
+.mask{position:absolute;overflow:hidden;white-space:nowrap;padding:0 .04em .06em 0}
+.ch{display:inline-block;will-change:transform}
+.lbl{position:absolute;font:700 23px/1 Pret;letter-spacing:.2em;white-space:nowrap}
+.hair{position:absolute;height:2px;transform-origin:0 50%}
+.tile{position:absolute;width:200px;height:200px;border-radius:2px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.tile img{width:118%;height:118%;object-fit:cover;mix-blend-mode:multiply}
+.tile .tx{font:600 88px/1 Corm;letter-spacing:.02em}
+svg{overflow:visible}
+</style>
+<script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="stage">
+  <div id="bgL" class="L"></div>
+  <canvas id="back" width="1080" height="1920"></canvas>
+  <div id="fgL" class="L"></div>
+  <div id="glwrap"></div>
+  <div id="chrome" class="L"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ───────────────────────── utilities ───────────────────────── */
+const W = 1080, H = 1920, DUR = 15;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const P = (t, a, b) => clamp((t - a) / (b - a));
+const E = {
+  lin: x => x,
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inExpo: x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10),
+  inOutExpo: x => x <= 0 ? 0 : x >= 1 ? 1 : x < .5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2,
+  outQuart: x => 1 - Math.pow(1 - x, 4),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOutQuart: x => x < .5 ? 8 * x ** 4 : 1 - Math.pow(-2 * x + 2, 4) / 2,
+  inCubic: x => x * x * x,
+  outBack: (x, s = 1.7) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+};
+const ep = (t, a, b, e = E.outExpo) => e(P(t, a, b));
+
+function el(tag, parent, css = {}, html = '', cls = '') {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  Object.assign(e.style, css);
+  if (html) e.innerHTML = html;
+  parent.appendChild(e);
+  return e;
+}
+const px = v => v + 'px';
+
+/* A kinetic line: masked container + per-character spans */
+function kline(parent, text, o) {
+  const m = el('div', parent, {
+    left: px(o.x ?? 0), top: px(o.y), font: `${o.style || ''} ${o.w || 900} ${o.size}px/1.12 ${o.fam || 'Pret'}`,
+    color: o.color || 'var(--ink)', letterSpacing: o.ls || '-0.04em',
+  }, '', 'mask');
+  if (o.right != null) { m.style.left = 'auto'; m.style.right = px(o.right); }
+  if (o.center) { m.style.left = '0'; m.style.right = '0'; m.style.textAlign = 'center'; m.style.padding = '0'; }
+  const chars = [];
+  for (const c of [...text]) {
+    const s = el('span', m, {}, c === ' ' ? '&nbsp;' : c, 'ch');
+    if (o.stroke) { s.style.webkitTextStroke = o.stroke; }
+    chars.push(s);
+  }
+  return { m, chars };
+}
+/* per-char rise-in; out: per-char rise-out */
+function kin(k, t, t0, { stag = .035, dur = .7, ease = E.outExpo, from = 1.15, rot = 0, out = null, outStag = .02, outDur = .45 } = {}) {
+  k.chars.forEach((c, i) => {
+    const p = ease(P(t, t0 + i * stag, t0 + i * stag + dur));
+    let y = (1 - p) * from * 100, r = (1 - p) * rot;
+    if (out != null) {
+      const q = E.inExpo(P(t, out + i * outStag, out + i * outStag + outDur));
+      y -= q * 115;
+    }
+    c.style.transform = `translateY(${y}%) rotate(${r}deg)`;
+  });
+}
+
+/* brilliant-cut diamond, top view */
+function diamondSVG(size, color, sw) {
+  const R = size / 2, c = R, pts = [], T = [], S = [], G = [];
+  const pt = (r, a) => [c + r * Math.cos(a), c + r * Math.sin(a)];
+  for (let k = 0; k < 8; k++) {
+    const a = k * Math.PI / 4 - Math.PI / 8;
+    T.push(pt(R * .5, a)); S.push(pt(R * .74, a + Math.PI / 8)); G.push(pt(R, a));
+  }
+  let d = '';
+  const L = (p, q) => d += `M${p[0].toFixed(1)} ${p[1].toFixed(1)}L${q[0].toFixed(1)} ${q[1].toFixed(1)}`;
+  for (let k = 0; k < 8; k++) {
+    const n = (k + 1) % 8;
+    L(T[k], T[n]); L(T[k], S[k]); L(S[k], T[n]);
+    L(T[k], G[k]); L(S[k], G[k]); L(S[k], G[n]);
+    L(S[k], pt(R, k * Math.PI / 4));
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${c}" cy="${c}" r="${R}" fill="none" stroke="${color}" stroke-width="${sw * 1.4}" pathLength="1" class="dr"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" pathLength="1" class="dr"/></svg>`;
+}
+const sparkleSVG = (s, col) => `<svg width="${s}" height="${s}" viewBox="-50 -50 100 100"><path d="M0-50C4-14 14-4 50 0C14 4 4 14 0 50C-4 14-14 4-50 0C-14-4-4-14 0-50Z" fill="${col}"/></svg>`;
+const pearlSVG = s => `<svg width="${s}" height="${s}" viewBox="-50 -50 100 100"><defs><radialGradient id="pg" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff"/><stop offset=".45" stop-color="#F1E8DA"/><stop offset="1" stop-color="#B9A88E"/></radialGradient></defs><circle r="48" fill="url(#pg)"/></svg>`;
+const ringSVG = (s, col) => `<svg width="${s}" height="${s}" viewBox="-50 -50 100 100"><circle r="38" fill="none" stroke="${col}" stroke-width="13"/></svg>`;
+const chainSVG = (s, col) => `<svg width="${s}" height="${s}" viewBox="-60 -50 120 100"><rect x="-54" y="-22" width="64" height="44" rx="22" fill="none" stroke="${col}" stroke-width="9"/><rect x="-10" y="-22" width="64" height="44" rx="22" fill="none" stroke="${col}" stroke-width="9"/></svg>`;
+const prongSVG = (s, col) => `<svg width="${s}" height="${s}" viewBox="-50 -50 100 100"><circle r="30" fill="none" stroke="${col}" stroke-width="5"/>${[45, 135, 225, 315].map(a => `<circle cx="${34 * Math.cos(a * Math.PI / 180)}" cy="${34 * Math.sin(a * Math.PI / 180)}" r="8" fill="${col}"/>`).join('')}</svg>`;
+
+/* ───────────────────────── scaffold ───────────────────────── */
+const bgL = document.getElementById('bgL'), fgL = document.getElementById('fgL'), chrome = document.getElementById('chrome');
+const COLORS = { ivory: '#F2EDE4', ink: '#121110', champ: '#D8BF8F', gold: '#B8914F', gold2: '#E3C68F', grey: '#8A8378' };
+function scene(bg) {
+  const b = el('div', bgL, { background: bg }, '', 'sc');
+  const f = el('div', fgL, {}, '', 'sc');
+  return { b, f, clip(c) { b.style.clipPath = c; f.style.clipPath = c; }, show(v) { b.style.display = f.style.display = v ? 'block' : 'none'; } };
+}
+const S1 = scene(COLORS.ivory), S2 = scene(COLORS.ink), S3 = scene(COLORS.champ), S4 = scene(COLORS.ink), S5 = scene(COLORS.ivory);
+
+/* ── S1 : 유행이 아닌 ── */
+const s1 = {};
+s1.hair = el('div', S1.b, { left: '64px', top: '610px', width: '952px', background: COLORS.ink }, '', 'hair');
+s1.l1o = kline(S1.f, '유행이', { x: 58, y: 630, size: 262, color: 'transparent', stroke: '3px #121110' });
+s1.l1 = kline(S1.f, '유행이', { x: 58, y: 630, size: 262 });
+s1.l2 = kline(S1.f, '아닌,', { x: 58, y: 910, size: 262 });
+s1.strike = el('div', S1.f, { left: '44px', top: '782px', width: '800px', height: '16px', background: COLORS.gold, transformOrigin: '0 50%' }, '', 'abs');
+s1.en = kline(S1.f, '— not a trend', { right: 64, y: 1210, size: 92, fam: 'Corm', w: 500, style: 'italic', ls: '0', color: COLORS.gold });
+s1.c1 = el('div', S1.f, { left: '64px', top: '1360px', font: '700 30px/1.35 Pret', letterSpacing: '.02em', color: COLORS.ink }, '유행을 따르지 않는<br>단 하나의 기준', 'abs');
+s1.c2 = el('div', S1.f, { right: '64px', top: '1360px', font: '800 24px/1.45 Pret', letterSpacing: '.18em', color: COLORS.ink, textAlign: 'right' }, 'TIMELESS.<br>CLASSIC.<br>FOREVER.', 'abs');
+s1.idx = el('div', S1.f, { left: '64px', top: '560px', color: COLORS.ink }, '01 / TIMELESS', 'lbl');
+
+/* ── S2 : 오래 남는 클래식의 기준 ── */
+const s2 = { rows: [] };
+for (let i = 0; i < 3; i++) {
+  const r = el('div', S2.f, { left: '0', top: px(330 + i * 238), font: `700 262px/1 Corm`, letterSpacing: '-.01em', whiteSpace: 'nowrap',
+    color: i === 1 ? COLORS.gold2 : 'transparent', webkitTextStroke: i === 1 ? '0' : '2.5px ' + COLORS.ivory }, 'CLASSIC&nbsp;·&nbsp;CLASSIC&nbsp;·&nbsp;CLASSIC&nbsp;·&nbsp;CLASSIC', 'abs');
+  s2.rows.push(r);
+}
+s2.hair = el('div', S2.f, { left: '64px', top: '1120px', width: '952px', background: COLORS.gold2, opacity: .7 }, '', 'hair');
+s2.idx = el('div', S2.f, { left: '64px', top: '1150px', color: COLORS.gold2 }, '02 / STANDARD', 'lbl');
+s2.idx2 = el('div', S2.f, { right: '64px', top: '1150px', color: COLORS.ivory, opacity: .7 }, 'SINCE 2022 ↗', 'lbl');
+s2.l1 = kline(S2.f, '오래 남는', { x: 58, y: 1215, size: 168, color: COLORS.ivory });
+s2.l2 = kline(S2.f, '클래식의 기준.', { x: 58, y: 1400, size: 168, color: COLORS.ivory });
+s2.l2.chars.slice(4).forEach(c => c.style.color = COLORS.gold2);
+
+/* ── S3 : 평생 착용할 수 있는 ── */
+const s3 = {};
+s3.idx = el('div', S3.f, { left: '64px', top: '250px', color: COLORS.ink }, '03 / LIFETIME', 'lbl');
+s3.arr = el('div', S3.f, { right: '64px', top: '250px', color: COLORS.ink }, '↗', 'lbl');
+s3.l1 = kline(S3.f, '평생', { x: 56, y: 290, size: 300 });
+s3.l1b = kline(S3.f, 'for a lifetime', { right: 64, y: 480, size: 76, fam: 'Corm', w: 500, style: 'italic', ls: '0', color: COLORS.ink });
+const GX = 95, GY = 690, TS = 200, GAP = 30;
+const TILE_DEF = [
+  ['img', 'p1'], ['svg', sparkleSVG(92, COLORS.ink), 'none'], ['svg', pearlSVG(96), 'none'], ['dia', 'ink'],
+  ['tx', '14K', 'ivory'], ['tx', '∞', 'none'], ['img', 'p3'], ['svg', ringSVG(120, COLORS.gold2), 'ink'],
+  ['svg', chainSVG(130, COLORS.ink), 'none'], ['img', 'p4'], ['tx', '18K', 'ink'], ['img', 'p5'],
+];
+s3.tiles = TILE_DEF.map((d, i) => {
+  const r = Math.floor(i / 4), c = i % 4;
+  const kind = d[0] === 'img' ? 'ivory' : d[0] === 'dia' ? d[1] : d[2];
+  const bg = kind === 'ivory' ? COLORS.ivory : kind === 'ink' ? COLORS.ink : 'transparent';
+  const t = el('div', S3.f, { left: px(GX + c * (TS + GAP)), top: px(GY + r * (TS + GAP)), background: bg,
+    border: kind === 'none' ? '2px solid rgba(18,17,16,.18)' : 'none', boxSizing: 'border-box' }, '', 'tile');
+  const inner = el('div', t, { width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' });
+  if (d[0] === 'img') inner.innerHTML = `<img src="img/${d[1]}.jpg">`;
+  else if (d[0] === 'dia') inner.innerHTML = diamondSVG(150, COLORS.gold2, 2.2);
+  else if (d[0] === 'svg') inner.innerHTML = d[1];
+  else inner.innerHTML = `<span class="tx" style="color:${kind === 'ink' ? COLORS.gold2 : COLORS.ink}">${d[1]}</span>`;
+  return { t, inner, r, c };
+});
+/* flip targets */
+const FLIPS = [
+  { i: 1, at: 7.35, html: `<img src="img/p2.jpg">`, bg: COLORS.ivory },
+  { i: 5, at: 7.47, html: diamondSVG(150, COLORS.ink, 2.2), bg: 'transparent' },
+  { i: 6, at: 7.59, html: `<span class="tx" style="color:${COLORS.gold2}">Au</span>`, bg: COLORS.ink },
+  { i: 8, at: 7.71, html: `<img src="img/p1.jpg">`, bg: COLORS.ivory },
+];
+FLIPS.forEach(f => { f.orig = { html: s3.tiles[f.i].inner.innerHTML, bg: s3.tiles[f.i].t.style.background }; });
+s3.l2 = kline(S3.f, '착용할 수 있는', { x: 58, y: 1395, size: 132 });
+s3.c1 = el('div', S3.f, { right: '64px', top: '1580px', font: '800 24px/1.45 Pret', letterSpacing: '.18em', color: COLORS.ink, textAlign: 'right' }, 'EVERY DAY,<br>EVERY MOMENT.', 'abs');
+s3.c0 = el('div', S3.f, { left: '64px', top: '1580px', font: '700 28px/1.4 Pret', color: COLORS.ink }, '매일, 그리고 평생', 'abs');
+
+/* ── S4 : 클래식한 파인주얼리 ── */
+const s4 = {};
+const PC = { x: 540, y: 1040 }, PR = 250;
+s4.l1 = kline(S4.f, '클래식한', { x: 58, y: 280, size: 168, color: COLORS.ivory });
+s4.l2 = kline(S4.f, '파인주얼리.', { x: 58, y: 468, size: 168, color: COLORS.gold2 });
+s4.tag = el('div', S4.f, { right: '64px', top: '520px', color: COLORS.ivory }, 'IN GOLD ↗', 'lbl');
+s4.orbitB = el('div', S4.b, { left: '0', top: '0' }, `<svg width="1080" height="1920">
+  <g transform="translate(${PC.x} ${PC.y}) rotate(-16)" fill="none" stroke="rgba(242,237,228,.22)" stroke-width="2">
+   <ellipse id="o1" rx="380" ry="118"/><circle id="o2" r="330" stroke-dasharray="3 9"/><ellipse id="o3" rx="455" ry="175" stroke="rgba(227,198,143,.28)"/>
+  </g><g id="dotsB"></g></svg>`, 'abs');
+s4.port = el('div', S4.f, { left: px(PC.x - PR), top: px(PC.y - PR), width: px(PR * 2), height: px(PR * 2), borderRadius: '50%', overflow: 'hidden', background: '#fff' }, '', 'abs');
+s4.imgs = ['p1', 'p3', 'p4', 'p5', 'p2'].map(k => el('img', s4.port, { position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', objectFit: 'cover' }, '', '')).map((im, i) => (im.src = `img/${['p1', 'p3', 'p4', 'p5', 'p2'][i]}.jpg`, im));
+s4.ivoryDisc = el('div', s4.port, { position: 'absolute', inset: '0', background: COLORS.ivory }, '', '');
+s4.portRing = el('div', S4.f, { left: px(PC.x - PR - 16), top: px(PC.y - PR - 16), width: px(PR * 2 + 32), height: px(PR * 2 + 32), borderRadius: '50%', border: `2px solid ${COLORS.gold2}`, boxSizing: 'border-box' }, '', 'abs');
+s4.dotsF = el('div', S4.f, { left: '0', top: '0' }, `<svg width="1080" height="1920"><g id="dotsF"></g></svg>`, 'abs');
+s4.spec = el('div', S4.f, { left: '64px', top: '1370px', color: COLORS.gold2 }, '14K · 18K · LAB DIAMOND', 'lbl');
+s4.l3 = kline(S4.f, 'WORN FOR', { x: 60, y: 1420, size: 92, color: COLORS.ivory, ls: '-0.03em' });
+s4.l4 = kline(S4.f, 'A LIFETIME.', { x: 60, y: 1515, size: 92, color: COLORS.ivory, ls: '-0.03em' });
+s4.idx = el('div', S4.f, { right: '64px', top: '1600px', color: COLORS.ivory }, '04 / FINE JEWELRY', 'lbl');
+const DOTS = [
+  { rx: 380, ry: 118, sp: 1.35, ph: 2.2, r: 13, col: COLORS.gold2 },
+  { rx: 455, ry: 175, sp: -0.9, ph: 0.4, r: 9, col: COLORS.ivory },
+  { rx: 380, ry: 118, sp: 1.35, ph: 4.4, r: 7, col: COLORS.ivory },
+  { rx: 455, ry: 175, sp: -0.9, ph: 3.6, r: 15, col: COLORS.gold },
+];
+const NS = 'http://www.w3.org/2000/svg';
+DOTS.forEach(d => {
+  d.b = document.createElementNS(NS, 'circle'); d.f = document.createElementNS(NS, 'circle');
+  for (const c of [d.b, d.f]) { c.setAttribute('r', d.r); c.setAttribute('fill', d.col); }
+  document.getElementById('dotsB').appendChild(d.b); document.getElementById('dotsF').appendChild(d.f);
+});
+
+/* ── S5 : 무에보 ── */
+const s5 = {};
+s5.shadow = el('div', S5.b, { left: '310px', top: '1560px', width: '460px', height: '56px', borderRadius: '50%', background: 'radial-gradient(closest-side, rgba(60,45,20,.30), rgba(60,45,20,0))' }, '', 'abs');
+s5.tag = el('div', S5.f, { left: '0', right: '0', top: '360px', textAlign: 'center', color: COLORS.grey }, 'THE STANDARD OF CLASSIC', 'lbl');
+s5.logo = kline(S5.f, 'MUEVO', { center: true, y: 410, size: 250, fam: 'Corm', w: 600, ls: '.1em', color: COLORS.ink });
+s5.kr = kline(S5.f, '무에보', { center: true, y: 705, size: 70, w: 700, ls: '.55em', color: COLORS.ink });
+s5.hair = el('div', S5.f, { left: '240px', top: '850px', width: '600px', background: COLORS.gold, transformOrigin: '50% 50%' }, '', 'hair');
+s5.t1 = kline(S5.f, '유행이 아닌, 오래 남는 클래식의 기준', { center: true, y: 895, size: 44, w: 700, ls: '-.01em', color: COLORS.ink });
+s5.t2 = kline(S5.f, '평생 착용할 수 있는 클래식한 파인주얼리', { center: true, y: 962, size: 36, w: 500, ls: '0', color: COLORS.grey });
+
+/* ── chrome ── */
+const ch = {};
+ch.tl = el('div', chrome, { left: '64px', top: '104px' }, '●&nbsp; MUEVO', 'lbl');
+ch.tr = el('div', chrome, { right: '64px', top: '104px' }, 'CLASSIC IN MOTION', 'lbl');
+ch.bl = el('div', chrome, { left: '64px', top: '1728px' }, 'FIND YOUR MOOD.', 'lbl');
+ch.br = el('div', chrome, { right: '64px', top: '1728px', letterSpacing: '.1em' }, '무에보 · MUEVO.KR', 'lbl');
+ch.cm1 = el('div', chrome, { left: '64px', top: '160px', width: '18px', height: '18px', borderLeft: '2px solid', borderTop: '2px solid' }, '', 'abs');
+ch.cm2 = el('div', chrome, { right: '64px', top: '1680px', width: '18px', height: '18px', borderRight: '2px solid', borderBottom: '2px solid' }, '', 'abs');
+ch.track = el('div', chrome, { left: '64px', top: '1774px', width: '952px', height: '2px', opacity: .18 }, '', 'abs');
+ch.bar = el('div', chrome, { left: '64px', top: '1774px', width: '952px', height: '2px', transformOrigin: '0 50%' }, '', 'abs');
+
+/* ───────────────────────── three.js ───────────────────────── */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x000000, 0);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.localClippingEnabled = false;
+const front = renderer.domElement; front.id = 'front';
+document.getElementById('glwrap').appendChild(front);
+const backCtx = document.getElementById('back').getContext('2d');
+
+const scene3 = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene3.environment = pmrem.fromScene(new RoomEnvironment(), 0.035).texture;
+scene3.environmentIntensity = 1.0;
+const key = new THREE.DirectionalLight(0xfff4e0, 2.4); key.position.set(-600, 900, 1400); scene3.add(key);
+const rim = new THREE.DirectionalLight(0xffffff, 1.4); rim.position.set(900, -300, 600); scene3.add(rim);
+scene3.add(new THREE.AmbientLight(0xffffff, .25));
+
+const FOV = 30, D = (H / 2) / Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+const cam = new THREE.PerspectiveCamera(FOV, W / H, 20, 20000);
+cam.position.set(0, 0, D); cam.lookAt(0, 0, 0);
+
+/* domed band ring (comfort-fit profile), px units: inner radius 150 */
+const RIN = 150, HR = 36, HH = 64;
+function bandGeo() {
+  const pts = [], n = 3.2, N = 96, cx = RIN + HR;
+  for (let i = 0; i <= N; i++) {
+    const th = Math.PI / 2 - i / N * Math.PI * 2;
+    const c = Math.cos(th), s = Math.sin(th);
+    const ex = c > 0 ? 2 / 2.2 : 2 / n;             // domed outside, flat inside
+    const x = cx + HR * Math.sign(c) * Math.pow(Math.abs(c), ex);
+    const y = HH * Math.sign(s) * Math.pow(Math.abs(s), 2 / n);
+    pts.push(new THREE.Vector2(x, y));
+  }
+  const g = new THREE.LatheGeometry(pts, 200);
+  g.computeVertexNormals();
+  return g;
+}
+const gGeo = bandGeo();
+const goldMat = new THREE.MeshPhysicalMaterial({ color: 0xF5C77E, metalness: 1, roughness: .17, clearcoat: .6, clearcoatRoughness: .08, envMapIntensity: 1.25, side: THREE.DoubleSide });
+const wgMat = new THREE.MeshPhysicalMaterial({ color: 0xE9E9EC, metalness: 1, roughness: .15, clearcoat: .6, clearcoatRoughness: .08, envMapIntensity: 1.2, side: THREE.DoubleSide });
+const pearlMat = new THREE.MeshPhysicalMaterial({ color: 0xF4EDE2, metalness: 0, roughness: .3, clearcoat: 1, clearcoatRoughness: .12, iridescence: .55, iridescenceIOR: 1.35, sheen: .6, sheenColor: new THREE.Color(0xffe3ea), sheenRoughness: .4 });
+const ringG = new THREE.Mesh(gGeo, goldMat); scene3.add(ringG);
+const ringW = new THREE.Mesh(gGeo, wgMat); scene3.add(ringW);
+const pearls = [0, 1, 2].map(() => { const m = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), pearlMat); scene3.add(m); return m; });
+
+const UP = new THREE.Vector3(0, 1, 0);
+const tmpV = new THREE.Vector3();
+function pose(x, y, z, axis, s) {           // screen px position + ring axis direction
+  const q = new THREE.Quaternion().setFromUnitVectors(UP, tmpV.set(...axis).normalize().clone());
+  return { p: new THREE.Vector3(x - W / 2, H / 2 - y, z), q, s };
+}
+function blend(a, b, t) {
+  return { p: a.p.clone().lerp(b.p, t), q: a.q.clone().slerp(b.q, t), s: lerp(a.s, b.s, t) };
+}
+function apply(m, ps) { m.position.copy(ps.p); m.quaternion.copy(ps.q); m.scale.setScalar(ps.s); m.visible = ps.s > 0.001; }
+function track(t, kf) {                     // kf: [[time, pose, ease?], ...]
+  if (t <= kf[0][0]) return kf[0][1];
+  for (let i = 1; i < kf.length; i++) {
+    if (t <= kf[i][0]) return blend(kf[i - 1][1], kf[i][1], (kf[i][2] || E.inOutCubic)(P(t, kf[i - 1][0], kf[i][0])));
+  }
+  return kf[kf.length - 1][1];
+}
+function pearlAt(m, x, y, z, r) { m.position.set(x - W / 2, H / 2 - y, z); m.scale.setScalar(Math.max(r, .001)); m.visible = r > .5; }
+
+/* S4 orbit pose */
+function orbitPose(t) {
+  const ph = 0.9 + (t - 8.6) * 1.75, a = -16 * Math.PI / 180;
+  const ox = 380 * Math.cos(ph), oy = 118 * Math.sin(ph);
+  const x = PC.x + ox * Math.cos(a) - oy * Math.sin(a), y = PC.y + ox * Math.sin(a) + oy * Math.cos(a);
+  const z = 330 * Math.sin(ph);
+  return pose(x, y, z, [Math.cos(t * 1.1), .55, Math.sin(t * 1.1)], .72);
+}
+/* S5 linked pair */
+function pairPoses(t) {
+  const g = new THREE.Object3D();
+  g.position.set(0, H / 2 - 1330, 0);
+  g.rotation.set(.32 + .05 * Math.sin(t * .9), -.55 + (t - 12) * .38, .12);
+  g.scale.setScalar(.86);
+  g.updateMatrixWorld();
+  const mk = (x, axis) => {
+    const o = new THREE.Object3D(); o.position.set(x, 0, 0);
+    o.quaternion.setFromUnitVectors(UP, new THREE.Vector3(...axis)); g.add(o); o.updateMatrixWorld();
+    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    o.matrixWorld.decompose(p, q, s); return { p, q, s: s.x };
+  };
+  return [mk(-(RIN + HR) / 2, [0, 0, 1]), mk((RIN + HR) / 2, [0, 1, 0])];
+}
+
+const planeBack = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
+const planeFront = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+
+function update3D(t) {
+  /* ---- gold ring ---- */
+  let g;
+  if (t < 3.08) {
+    const wob = Math.sin(t * 2.2) * .08;
+    const A = pose(1300, 180, 0, [-.2, .9, .4], .82);
+    const B = pose(800, 768, 0, [-.62 + wob, .38, .7], .9);
+    const C = pose(540, 960, 70, [0, 0, 1], 1);
+    if (t < 2.25) g = track(t, [[0.15, A], [1.05, B, E.outExpo]]);
+    else g = track(t, [[2.25, B], [2.6, C, E.inOutCubic]]);
+    if (t > 2.6) {                                   // dive through the camera
+      const s = lerp(1, 9.5, E.inExpo(P(t, 2.6, 3.05)));
+      g = pose(540, 960, HH * s * 1.03 + 6, [0, 0, 1], s);
+    }
+  } else if (t < 6.2) {
+    const spin = (t - 3) * 2.6 + E.inExpo(P(t, 5.25, 5.75)) * 6;
+    const ax = [Math.sin(spin) * .96, .28, Math.cos(spin) * .96];
+    const y = t < 5.25 ? lerp(2400, 715, ep(t, 3.05, 3.8)) : lerp(715, -600, E.inExpo(P(t, 5.25, 5.75)));
+    g = pose(540, y, 0, ax, 1.42);
+    if (t > 5.8) g.s = 0;
+  } else if (t < 8.45) {
+    g = pose(0, 0, 0, [0, 1, 0], 0);
+  } else if (t < 11.4) {
+    const O = orbitPose(t);
+    g = blend(pose(1400, 600, 0, [1, .3, 0], .72), O, E.outExpo(P(t, 8.45, 9.2)));
+  } else {
+    const [pa] = pairPoses(t);
+    g = blend(orbitPose(t), pa, E.inOutQuart(P(t, 11.4, 12.5)));
+  }
+  apply(ringG, g);
+
+  /* ---- white-gold ring (end lockup) ---- */
+  if (t > 12.1) {
+    const [, pb] = pairPoses(t);
+    pb.s *= E.outBack(P(t, 12.25, 12.95), 1.3);
+    apply(ringW, pb);
+  } else ringW.visible = false;
+
+  /* ---- pearls ---- */
+  pearls.forEach(p => p.visible = false);
+  if (t < 2.7) {
+    const r = 30 * E.outBack(P(t, .95, 1.35)) * (1 - E.inExpo(P(t, 2.25, 2.55)));
+    pearlAt(pearls[0], 975 + Math.sin(t * 2) * 6, 610 + Math.cos(t * 2.4) * 6, 60, r);
+    const r2 = 18 * E.outBack(P(t, 1.15, 1.5)) * (1 - E.inExpo(P(t, 2.2, 2.5)));
+    pearlAt(pearls[1], 720 + Math.cos(t * 1.6) * 8, 1120 + Math.sin(t * 2) * 8, 60, r2);
+  } else if (t > 3.2 && t < 5.9) {
+    const k = (t - 3) * 1.6, rr = E.outBack(P(t, 3.4, 3.9)) * (1 - E.inExpo(P(t, 5.2, 5.6)));
+    const cy = t < 5.25 ? lerp(2400, 715, ep(t, 3.05, 3.8)) : lerp(715, -600, E.inExpo(P(t, 5.25, 5.75)));
+    pearlAt(pearls[0], 540 + 330 * Math.cos(k), cy + 60 * Math.sin(k), 300 * Math.sin(k), 30 * rr);
+    pearlAt(pearls[1], 540 + 290 * Math.cos(k + 2.6), cy - 40 * Math.sin(k + 2.6), 260 * Math.sin(k + 2.6), 20 * rr);
+  } else if (t > 8.6 && t < 11.9) {
+    const rr = E.outBack(P(t, 8.9, 9.4)) * (1 - E.inExpo(P(t, 11.3, 11.7)));
+    [[455, 175, -.9, 1.2, 34], [330, 330, 1.2, 3.3, 22], [380, 118, 1.75, 4.1, 16]].forEach(([rx, ry, sp, ph0, r], i) => {
+      const ph = ph0 + (t - 8.6) * sp, a = -16 * Math.PI / 180;
+      const ox = rx * Math.cos(ph), oy = ry * Math.sin(ph) * (ry === 330 ? .3 : 1);
+      pearlAt(pearls[i], PC.x + ox * Math.cos(a) - oy * Math.sin(a), PC.y + ox * Math.sin(a) + oy * Math.cos(a), 300 * Math.sin(ph), r * rr);
+    });
+  }
+
+  /* ---- two-pass render: behind text (z<0) → back canvas, in front (z>0) → front canvas ---- */
+  renderer.clippingPlanes = [planeBack];
+  renderer.render(scene3, cam);
+  backCtx.clearRect(0, 0, W, H);
+  backCtx.drawImage(front, 0, 0);
+  renderer.clippingPlanes = [planeFront];
+  renderer.render(scene3, cam);
+}
+
+/* ───────────────────────── timeline ───────────────────────── */
+function circle(r, x, y) { return `circle(${Math.max(r, 0).toFixed(1)}px at ${x}px ${y}px)`; }
+function invCircle(r, x, y) {
+  r = Math.max(r, 0.01);
+  return `path(evenodd, "M0 0H${W}V${H}H0Z M${x - r} ${y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z")`;
+}
+function skyPts(t, t0) {                 // staggered columns rising from bottom
+  const n = 6, w = W / n, pts = [];
+  for (let i = 0; i < n; i++) {
+    const p = E.inOutQuart(P(t, t0 + i * .045, t0 + i * .045 + .38));
+    const y = H - p * (H + 2);
+    pts.push([i * w, y], [(i + 1) * w, y]);
+  }
+  return pts;
+}
+const fmt = pts => pts.map(([x, y]) => `${x.toFixed(1)}px ${y.toFixed(1)}px`).join(',');
+const skyline = (t, t0) => `polygon(${fmt([[0, H], ...skyPts(t, t0), [W, H]])})`;
+const invSkyline = (t, t0) => `polygon(${fmt([[0, -2], [W, -2], ...skyPts(t, t0).reverse()])})`;
+function fclip(sc, c) { sc.f.style.clipPath = c; }
+
+function seek(t) {
+  /* visibility & transitions */
+  S1.show(t < 3.1);
+  S2.show(t >= 2.55 && t < 6.5);
+  S3.show(t >= 5.6 && t < 8.75);
+  S4.show(t >= 8.3 && t < 12.1);
+  S5.show(t >= 11.4);
+  // S1→S2 through the ring's hole
+  if (t < 3.05) {
+    const s = t > 2.6 ? lerp(1, 9.5, E.inExpo(P(t, 2.6, 3.05))) : 0;
+    const z = HH * s * 1.03 + 6 - HH * s;           // far face of the band
+    const r = s ? RIN * s * D / (D - z) - 2 : 0;
+    S2.clip(circle(r, 540, 960)); fclip(S1, invCircle(r, 540, 960));
+  } else S2.clip('none');
+  S3.clip(t < 6.1 ? skyline(t, 5.62) : 'none');
+  if (t >= 5.6 && t < 6.1) fclip(S2, invSkyline(t, 5.62));
+  const r4 = E.inOutCubic(P(t, 8.32, 8.72)) * 1150;
+  S4.clip(t < 8.72 ? circle(r4, 540, 1010) : 'none'); if (t >= 8.3) fclip(S3, invCircle(r4, 540, 1010)); else if (t >= 6.1) fclip(S3, 'none');
+  const r5 = lerp(PR, 1150, E.inOutQuart(P(t, 11.5, 12.0)));
+  S5.clip(t < 12.0 ? circle(r5, PC.x, PC.y) : 'none'); if (t >= 11.5) fclip(S4, invCircle(r5, PC.x, PC.y)); else fclip(S4, 'none');
+
+  /* chrome colour per scene */
+  const dark = (t >= 2.9 && t < 5.85) || (t >= 8.52 && t < 11.75);
+  const cc = dark ? COLORS.ivory : COLORS.ink;
+  for (const k of ['tl', 'tr', 'bl', 'br']) ch[k].style.color = cc;
+  ch.cm1.style.borderColor = ch.cm2.style.borderColor = cc;
+  ch.track.style.background = cc;
+  ch.bar.style.background = dark ? COLORS.gold2 : COLORS.gold;
+  ch.bar.style.transform = `scaleX(${t / DUR})`;
+  const ci = ep(t, 0, .6);
+  for (const k of ['tl', 'tr', 'bl', 'br', 'cm1', 'cm2']) ch[k].style.opacity = ci;
+  ch.tr.textContent = t < 11.8 ? 'CLASSIC IN MOTION' : 'SINCE 2022';
+
+  /* ── S1 ── */
+  s1.hair.style.transform = `scaleX(${ep(t, .1, .9, E.inOutQuart)})`;
+  s1.idx.style.opacity = ep(t, .3, .8);
+  kin(s1.l1, t, .22, { stag: .07, dur: .8, rot: 6 });
+  kin(s1.l1o, t, .22, { stag: .07, dur: .8, rot: 6 });
+  kin(s1.l2, t, .42, { stag: .07, dur: .8, rot: 6 });
+  const hollow = ep(t, 1.55, 2.0, E.inOutCubic);
+  s1.l1.chars.forEach((c, i) => c.style.opacity = 1 - E.inOutCubic(P(t, 1.55 + i * .07, 1.95 + i * .07)));
+  s1.strike.style.transform = `scaleX(${ep(t, 1.45, 1.9, E.inOutQuart)})`;
+  kin(s1.en, t, 1.75, { stag: .025, dur: .7 });
+  s1.c1.style.opacity = s1.c2.style.opacity = ep(t, 1.0, 1.6);
+  s1.c1.style.transform = s1.c2.style.transform = `translateY(${(1 - ep(t, 1.0, 1.6)) * 30}px)`;
+  // punch: whole S1 type block leans back as the ring dives
+  const dive = E.inExpo(P(t, 2.55, 3.05));
+  S1.f.style.transform = `scale(${1 + dive * .08})`; S1.f.style.transformOrigin = '540px 960px';
+
+  /* ── S2 ── */
+  s2.rows.forEach((r, i) => {
+    const dir = i % 2 ? 1 : -1, base = i % 2 ? -1180 : -300;
+    const enter = (1 - ep(t, 2.6, 3.5)) * 500 * dir;
+    r.style.transform = `translateX(${base + dir * (t - 2.6) * 95 + enter}px)`;
+  });
+  s2.hair.style.transform = `scaleX(${ep(t, 3.5, 4.2, E.inOutQuart)})`;
+  s2.idx.style.opacity = s2.idx2.style.opacity = ep(t, 3.7, 4.2) * (1 - ep(t, 5.4, 5.7));
+  kin(s2.l1, t, 3.75, { stag: .05, dur: .75, rot: 5, out: 5.35 });
+  kin(s2.l2, t, 3.98, { stag: .05, dur: .75, rot: 5, out: 5.42 });
+
+  /* ── S3 ── */
+  s3.idx.style.opacity = s3.arr.style.opacity = ep(t, 6.0, 6.4);
+  kin(s3.l1, t, 5.95, { stag: .09, dur: .8, from: 1.2 });
+  kin(s3.l1b, t, 6.35, { stag: .02, dur: .7 });
+  s3.tiles.forEach((o, i) => {
+    const t0 = 6.15 + (o.r + o.c) * .07;
+    const p = P(t, t0, t0 + .55), e = E.outBack(p, 1.6);
+    let sx = e, sy = e;
+    for (const f of FLIPS) if (f.i === i) {
+      const q = P(t, f.at, f.at + .32);
+      const useNew = q >= .5;
+      if (o.inner.dataset.state !== String(useNew)) {
+        o.inner.dataset.state = String(useNew);
+        o.inner.innerHTML = useNew ? f.html : f.orig.html;
+        o.t.style.background = useNew ? f.bg : f.orig.bg;
+      }
+      sx *= Math.abs(Math.cos(E.inOutCubic(q) * Math.PI));
+    }
+    o.t.style.opacity = clamp(p * 3);
+    o.t.style.transform = `scale(${sx},${sy}) rotate(${(1 - E.outExpo(p)) * -10}deg)`;
+    const img = o.inner.querySelector('img');
+    if (img) img.style.transform = `scale(${1 + (t - 6) * .025})`;
+    o.inner.querySelectorAll('.dr').forEach((d, j) => { d.style.strokeDasharray = '1'; d.style.strokeDashoffset = String(1 - E.inOutCubic(P(t, 6.5 + j * .15, 7.3 + j * .15))); });
+  });
+  kin(s3.l2, t, 6.6, { stag: .045, dur: .7, rot: 4 });
+  s3.c0.style.opacity = s3.c1.style.opacity = ep(t, 7.0, 7.5);
+  // gentle grid drift
+  S3.f.style.transform = `translateY(${(1 - ep(t, 5.8, 7.0)) * 40}px)`;
+
+  /* ── S4 ── */
+  kin(s4.l1, t, 8.55, { stag: .06, dur: .75, rot: 5 });
+  kin(s4.l2, t, 8.72, { stag: .06, dur: .75, rot: 5 });
+  s4.tag.style.opacity = ep(t, 9.1, 9.5);
+  const pin = E.outBack(P(t, 8.6, 9.3), 1.4);
+  s4.port.style.transform = s4.portRing.style.transform = `scale(${pin})`;
+  s4.portRing.style.opacity = 1 - ep(t, 11.2, 11.5);
+  const CUTS = [8.6, 9.2, 9.75, 10.3, 10.85];
+  s4.imgs.forEach((im, i) => {
+    const inP = i === 0 ? 1 : E.inOutExpo(P(t, CUTS[i] - .18, CUTS[i] + .22));
+    im.style.transform = `translateY(${(1 - inP) * 100}%) scale(${1.12 - .1 * P(t, CUTS[i] - .2, CUTS[i] + .8)})`;
+    im.style.zIndex = i;
+  });
+  s4.ivoryDisc.style.zIndex = 9;
+  s4.ivoryDisc.style.transform = `translateY(${(1 - E.inOutExpo(P(t, 11.1, 11.45))) * 100}%)`;
+  s4.spec.style.opacity = ep(t, 9.4, 9.9) * (1 - ep(t, 11.1, 11.3));
+  kin(s4.l3, t, 9.6, { stag: .035, dur: .7, out: 11.05 });
+  kin(s4.l4, t, 9.7, { stag: .035, dur: .7, out: 11.1 });
+  s4.idx.style.opacity = ep(t, 9.8, 10.2) * (1 - ep(t, 11.1, 11.3));
+  const oa = -16 * Math.PI / 180;
+  DOTS.forEach(d => {
+    const ph = d.ph + (t - 8.6) * d.sp, ox = d.rx * Math.cos(ph), oy = d.ry * Math.sin(ph);
+    const x = PC.x + ox * Math.cos(oa) - oy * Math.sin(oa), y = PC.y + ox * Math.sin(oa) + oy * Math.cos(oa);
+    const s = ep(t, 9.0, 9.5, E.outQuart) * (1 - ep(t, 11.1, 11.4));
+    for (const c of [d.b, d.f]) { c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', d.r * s); }
+    const frontSide = Math.sin(ph) > 0;
+    d.f.style.display = frontSide ? 'inline' : 'none'; d.b.style.display = frontSide ? 'none' : 'inline';
+  });
+  s4.orbitB.style.opacity = ep(t, 8.8, 9.4) * (1 - ep(t, 11.1, 11.4));
+  s4.orbitB.style.transform = `rotate(${(t - 8.6) * 2}deg)`; s4.orbitB.style.transformOrigin = `${PC.x}px ${PC.y}px`;
+
+  /* ── S5 ── */
+  s5.shadow.style.opacity = ep(t, 12.2, 13.0);
+  s5.shadow.style.transform = `scaleX(${.8 + .2 * ep(t, 12.2, 13.0)})`;
+  s5.tag.style.opacity = ep(t, 12.7, 13.3);
+  s5.tag.style.letterSpacing = `${.6 - .4 * ep(t, 12.7, 14.2, E.outQuart)}em`;
+  kin(s5.logo, t, 11.95, { stag: .075, dur: 1.0, from: 1.1 });
+  s5.logo.m.style.letterSpacing = `${.26 - .16 * ep(t, 11.95, 13.6, E.outQuart)}em`;
+  kin(s5.kr, t, 12.45, { stag: .09, dur: .8 });
+  s5.hair.style.transform = `scaleX(${ep(t, 12.6, 13.3, E.inOutQuart)})`;
+  kin(s5.t1, t, 12.85, { stag: .014, dur: .7 });
+  kin(s5.t2, t, 13.1, { stag: .012, dur: .7 });
+
+  update3D(t);
+}
+
+window.seek = seek;
+await document.fonts.ready;
+await Promise.all([...document.images].map(i => i.complete ? 1 : new Promise(r => i.onload = i.onerror = r)));
+await new Promise(r => { const tmp = new Image(); tmp.onload = tmp.onerror = r; tmp.src = 'img/p2.jpg'; });
+seek(0);
+window.READY = true;
+</script>
+</body>
+</html>
